@@ -1,10 +1,11 @@
 from distutils.core import setup
 
-INSTALL_REQUIRES = ['tensorflow-gpu==2.0.0b']
+INSTALL_REQUIRES = ['tensorflow-gpu==2.0.0b1', 'scipy', 'pillow',
+                    'tqdm', 'matplotlib', 'loguru', 'pandas']
 
 setup(
-    name='earthbeaver',
+    name='kss',
     version='0.1.0',
-    packages=['beaver'],
+    packages=['kss'],
     install_requires=INSTALL_REQUIRES
 )
