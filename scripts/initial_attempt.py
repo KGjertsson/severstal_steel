@@ -1,43 +1,17 @@
 from pathlib import Path
 
-import numpy as np
-from PIL import Image
-from tqdm import tqdm
+from loguru import logger
 import matplotlib.pyplot as plt
 import pandas as pd
+import tensorflow as tf
 
-from loguru import logger
+from kss import generators
 
 LBL_SHAPE = [256, 1600]
 
 
-def create_train_img_generator(train_image_files):
-    logger.info('creating train img generator')
-    return map(
-        lambda train_image_file: np.array(Image.open(train_image_file)),
-        train_image_files
-    )
-
-
-def create_annotation_img(annotations):
-    logger.info('creating train lbl generator')
-    lbl = np.zeros(LBL_SHAPE)
-    lbl = lbl.reshape(np.prod(lbl.shape), order='F')
-    for id_, annotation in enumerate(annotations):
-        if annotation[1] != -1:
-            image_id = id_ + 1
-            pixels = annotation[1].split()
-            index = 0
-            while index < len(pixels):
-                start_index = int(pixels[index])
-                end_index = int(pixels[index]) + int(pixels[index + 1])
-                lbl[start_index:end_index] = image_id
-                index = index + 2
-    lbl = lbl.reshape(LBL_SHAPE, order='F')
-    return lbl
-
-
 def main():
+    # define variables
     root_data_dir = Path(
         '~/git/severstal_steel/data/severstal-steel-defect-detection'
     ).expanduser()
@@ -45,21 +19,56 @@ def main():
     train_img_files = [d_ for d_ in train_image_dir.glob('*')]
     train_annotation_file = root_data_dir / 'train.csv'
     train_annotations = pd.read_csv(train_annotation_file).fillna(-1)
-    train_img_gen = create_train_img_generator(train_img_files)
-    train_lbl_gen = map(
-        lambda train_img_file: create_annotation_img(
-            train_annotations[
-                train_annotations.ImageId_ClassId.str.startswith(
-                    f'{train_img_file.name}'
-                )
-            ].values
-        ),
-        train_img_files
+    validation_split = 0.7
+    # TODO: include batch size in generators
+    batch_size = 32
+    # initialize generators
+    train_gen = generators.create_train_gens(
+        train_img_files=train_img_files[:int(len(train_img_files) * validation_split)],
+        train_annotations=train_annotations[:int(len(train_annotations) * validation_split)],
+        lbl_shape=LBL_SHAPE,
+        shuffle=True
     )
-
-    first_img = next(train_img_gen)
-    first_lbl = next(train_lbl_gen)
-
+    val_gen = generators.create_train_gens(
+        train_img_files=train_img_files[int(len(train_img_files) * validation_split):],
+        train_annotations=train_annotations[int(len(train_annotations) * validation_split):],
+        lbl_shape=LBL_SHAPE,
+        shuffle=True
+    )
+    # create CNN
+    input_ = tf.keras.layers.Input(shape=LBL_SHAPE)
+    c1 = tf.keras.layers.Conv2D(32, (3, 3), padding='same')(input_)
+    c1 = tf.keras.layers.BatchNormalization()(c1)
+    c1 = tf.keras.layers.Activation('relu')(c1)
+    c2 = tf.keras.layers.MaxPooling2D()(c1)
+    c2 = tf.keras.layers.Conv2D(64, (3, 3), padding='same')(c2)
+    c2 = tf.keras.layers.BatchNormalization()(c2)
+    c2 = tf.keras.layers.Activation('relu')(c2)
+    c3 = tf.keras.layers.UpSampling2D()(c2)
+    c3 = tf.keras.layers.add([c3, c1])
+    c3 = tf.keras.layers.Conv2D(32, (3, 3), padding='same')(c3)
+    c3 = tf.keras.layers.BatchNormalization()(c3)
+    c3 = tf.keras.layers.Activation('relu')(c3)
+    output = tf.keras.layers.Conv2D(5, (1, 1), padding='same')(c3)
+    output = tf.keras.layers.Activation('softmax')(output)
+    model = tf.keras.models.Model(input=input_, output=output)
+    model.compile('adam', loss='categorical_crossentropy', metrics=[])
+    # train CNN
+    history = model.fit_generator(
+        generator=train_gen,
+        steps_per_epoch=None,
+        epochs=1,
+        verbose=1,
+        callbacks=None,
+        validation_data=val_gen,
+        validation_steps=None,
+        workers=1,
+        use_multiprocessing=True,
+        shuffle=True
+    ).history
+    # TODO: set the correct arguments, specifically the steps per epoch and shuffle
+    logger.info(f'training history: {history}')
+    first_img, first_lbl = next(train_gen)
     _, axs = plt.subplots(2, 1)
     axs[0].imshow(first_img)
     axs[1].imshow(first_lbl)
